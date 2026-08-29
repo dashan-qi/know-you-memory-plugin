@@ -5,8 +5,9 @@ from memory_core.importer import import_workspace, import_path
 
 class TestImporter(unittest.TestCase):
     def _make_ws(self, root: Path):
+        # CLAUDE.md 含两个 `##` 节：原则（→L1）+ 偏好（→L3），必须分块各自落层
         (root / "CLAUDE.md").write_text(
-            "## 原则\n绝不删除用户数据\n## 偏好\n中文交流\n", encoding="utf-8")
+            "## 原则\n绝不删除用户数据\n## 偏好\n喜欢中文交流\n", encoding="utf-8")
         (root / "README.md").write_text("# demo 项目\nDuckDB 直连引擎\n", encoding="utf-8")
         sk = root / ".claude" / "skills" / "greet"
         sk.mkdir(parents=True)
@@ -19,11 +20,12 @@ class TestImporter(unittest.TestCase):
             mc = MemoryCore(data_dir=root / "memory")
             mc.close()  # 仅建库
             result = import_workspace(root, data_dir=root / "memory")
-            self.assertGreater(result["imported"], 0)
-            self.assertIn("L1", result["by_layer"])   # CLAUDE.md 原则
-            self.assertIn("L3", result["by_layer"])   # 偏好 + skill
+            # CLAUDE.md 分两块（原则+偏好）+ SKILL.md + README.md = 4 条
+            self.assertEqual(result["imported"], 4)
+            self.assertEqual(result["by_layer"].get("L1", 0), 1)   # 原则 分块 → L1
+            self.assertGreaterEqual(result["by_layer"].get("L3", 0), 1)  # 偏好 分块 + skill → L3
             self.assertIn("L4", result["by_layer"])   # README
-            # 幂等：再扫一次不新增
+            # 幂等：再扫一次不新增（每块 source_file::slug 各自 hash 命中）
             again = import_workspace(root, data_dir=root / "memory")
             self.assertEqual(again["imported"], 0)
 

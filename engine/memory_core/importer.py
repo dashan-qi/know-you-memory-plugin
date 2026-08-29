@@ -1,5 +1,6 @@
 """已有记忆分拣器 — 把 workspace 的 CLAUDE.md/.claude/README 分拣进五层金字塔"""
 from __future__ import annotations
+import re
 from pathlib import Path
 from memory_core import MemoryCore
 from memory_core.classify import classify_content
@@ -25,18 +26,54 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def _content_for(path: Path, rel: str) -> str:
-    """按来源生成记忆内容（保留 frontmatter 标题结构）"""
-    body = _read(path)
-    if body is None:
-        return ""
-    if "skills" in rel and body.strip():
-        return f"# Skill {path.stem}\n\n{body[:2000]}"
-    if "commands" in rel and body.strip():
-        return f"# Command {path.stem}\n\n{body[:2000]}"
-    if "agents" in rel and body.strip():
-        return f"# Agent {path.stem}\n\n{body[:2000]}"
-    return body[:4000]
+def _chunk_content(content: str) -> list[str]:
+    """按 `## ` 二级标题分块 markdown 内容（spec §7.2 约束）。
+
+    每块 = 标题行 + 到下一个 `## ` 标题前的正文；无 `## ` 标题 → 整文件一块。
+    YAML frontmatter（`---...---`）只保留给第一块，让原则/偏好/项目各节
+    分别落到对应层级，而不是整文件坍缩成一条。
+    """
+    lines = content.splitlines(keepends=True)
+    fm_lines: list[str] = []
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                fm_lines = lines[: i + 1]
+                lines = lines[i + 1:]
+                break
+    chunks: list[str] = []
+    cur: list[str] = []
+    for ln in lines:
+        if re.match(r"^##\s+", ln):
+            if cur:
+                chunks.append("".join(cur))
+            cur = [ln]
+        else:
+            cur.append(ln)
+    if cur:
+        chunks.append("".join(cur))
+    if not chunks:
+        return []
+    if fm_lines:
+        chunks[0] = "".join(fm_lines) + "\n" + chunks[0]
+    # 去空白块
+    return [c for c in (c.strip() for c in chunks) if c]
+
+
+def _heading_slug(chunk: str, idx: int) -> str:
+    """从 chunk 的首个 `## ` 标题生成稳定 slug（无标题回退到 chunk 索引）。
+
+    用于多块文件的 source_file 后缀，保证每块有自己的 hash 幂等键。
+    """
+    m = re.search(r"^#+\s+(.+)", chunk, flags=re.MULTILINE)
+    if m:
+        slug = m.group(1).strip().lower()
+        slug = "".join(
+            c for c in slug if c.isalnum() or "一" <= c <= "鿿" or c in "-_"
+        )[:40]
+        if slug:
+            return slug
+    return f"chunk{idx}"
 
 
 def _settings_summary(path: Path) -> str | None:
@@ -46,8 +83,14 @@ def _settings_summary(path: Path) -> str | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    names = {"hooks": sorted((data.get("hooks") or {}).keys()),
-             "mcp": sorted((data.get("mcpServers") or {}).keys())}
+    if not isinstance(data, dict):
+        return None
+    hooks = data.get("hooks")
+    mcp = data.get("mcpServers")
+    names = {
+        "hooks": sorted(hooks.keys()) if isinstance(hooks, dict) else [],
+        "mcp": sorted(mcp.keys()) if isinstance(mcp, dict) else [],
+    }
     return f"# Claude 配置摘要\n\nhooks: {names['hooks']}\nmcpServers: {names['mcp']}"
 
 
@@ -97,35 +140,56 @@ def _do_import(mc: MemoryCore, sources: list[tuple[Path, str, str]]) -> dict:
     for path, layer_hint, cat_hint in sources:
         if path.suffix == ".json":
             content = _settings_summary(path)
+            chunks = [content] if content else []
         else:
-            content = _content_for(path, str(path))
-        if not content:
+            body = _read(path)
+            if body is None:
+                stats["skipped"] += 1
+                continue
+            # skill/command/agent 单文件先加标题前缀（保留来源可读性）
+            rel = str(path)
+            if "skills" in rel and body.strip():
+                body = f"# Skill {path.stem}\n\n{body}"
+            elif "commands" in rel and body.strip():
+                body = f"# Command {path.stem}\n\n{body}"
+            elif "agents" in rel and body.strip():
+                body = f"# Agent {path.stem}\n\n{body}"
+            chunks = _chunk_content(body)
+        if not chunks:
             stats["skipped"] += 1
             continue
-        # 幂等：同文件 hash 未变 → 跳过（source_file 替换 + hash 判断 → 重扫不新增）
-        content_hash = _sha256_file(content)
-        if mc.store.sqlite.file_hash_unchanged(str(path), content_hash):
-            stats["skipped"] += 1
-            continue
-        classified = classify_content(content)
-        # 来源 hint 是默认值；classify 只在命中明确规则（非默认 L4/knowledge）时覆盖，
-        # 否则 skill→L3 / agents→LCM 等 hint 会被 classify 的兜底 L4 吞掉。
-        layer, category = layer_hint, cat_hint
-        if classified.get("layer") != "L4" or classified.get("category") != "knowledge":
-            layer = classified.get("layer") or layer_hint
-            category = classified.get("category") or cat_hint
-        try:
-            mid = mc.add(content, layer=layer, category=category,
-                         scope="project", project=None,
-                         source_file=str(path), dedup=True)
+        multi = len(chunks) > 1
+        for idx, chunk in enumerate(chunks):
+            # 幂等：同 chunk 内容 hash 未变 → 跳过。多块文件 source_file 带块 slug，
+            # 每块各自跟踪 hash，重扫不新增、增删某节时其余块不重灌。
+            source_file = str(path)
+            if multi:
+                source_file = f"{source_file}::{_heading_slug(chunk, idx)}"
+            content_hash = _sha256_file(chunk)
+            if mc.store.sqlite.file_hash_unchanged(source_file, content_hash):
+                stats["skipped"] += 1
+                continue
+            classified = classify_content(chunk)
+            # 来源 hint 是默认值；classify 只在命中明确规则（非默认 L4/knowledge）时覆盖，
+            # 否则 skill→L3 / agents→LCM 等 hint 会被 classify 的兜底 L4 吞掉。
+            layer, category = layer_hint, cat_hint
+            if classified.get("layer") != "L4" or classified.get("category") != "knowledge":
+                layer = classified.get("layer") or layer_hint
+                category = classified.get("category") or cat_hint
+            # L1-L3 规则的 global 作用域优先于 hardcode 的 project
+            scope = classified.get("scope") or "project"
+            try:
+                mid = mc.add(chunk, layer=layer, category=category,
+                             scope=scope, project=None,
+                             source_file=source_file, dedup=True)
+                if mid:
+                    st = path.stat()
+                    mc.store.sqlite.upsert_file_hash(source_file, content_hash,
+                                                     st.st_mtime, st.st_size)
+            except Exception:
+                stats["skipped"] += 1
+                continue
             if mid:
-                st = path.stat()
-                mc.store.sqlite.upsert_file_hash(str(path), content_hash,
-                                                 st.st_mtime, st.st_size)
-        except Exception:
-            stats["skipped"] += 1
-            continue
-        if mid:
-            stats["imported"] += 1
-            stats["by_layer"][layer] = stats["by_layer"].get(layer, 0) + 1
+                stats["imported"] += 1
+                stats["by_layer"][layer] = stats["by_layer"].get(layer, 0) + 1
     return stats
