@@ -38,5 +38,19 @@ class TestImporter(unittest.TestCase):
             result = import_path(p, data_dir=Path(d) / "memory")
             self.assertGreaterEqual(result["imported"], 1)
 
+    def test_duplicate_heading_slug_collision(self):
+        # 同文件两个相同 `## 标题`（真实 CLAUDE.md 常见）：slug 必须带块序号区分，
+        # 否则两块 source_file 相同 → 重扫时 hash 键冲突、每块都重灌（imported != 0）
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(
+                "## 偏好\n喜欢中文交流\n## 偏好\n喜欢用番茄钟\n", encoding="utf-8")
+            mc = MemoryCore(data_dir=root / "memory")
+            mc.close()
+            first = import_workspace(root, data_dir=root / "memory")
+            self.assertEqual(first["imported"], 2)
+            again = import_workspace(root, data_dir=root / "memory")
+            self.assertEqual(again["imported"], 0)
+
 if __name__ == "__main__":
     unittest.main()

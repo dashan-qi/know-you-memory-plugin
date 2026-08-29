@@ -12,6 +12,10 @@ from memory_core.importer import import_path
 
 _CONTENT_LENGTH_RE = re.compile(r"Content-Length:\s*(\d+)", re.IGNORECASE)
 
+# 可跳过帧的哨兵（空行心跳 / 非对象 JSON / 坏 JSON）——区别于真 EOF（None）。
+# main() 只对 None 退出，对 _SKIP 跳过继续，保证裸 \n 或 [1,2,3] 不杀死服务器。
+_SKIP = object()
+
 
 def _json_object(text: str) -> dict | None:
     """把一行文本解析为 JSON 对象；非对象帧/坏 JSON 返回 None（不崩循环）。"""
@@ -22,33 +26,39 @@ def _json_object(text: str) -> dict | None:
     return msg if isinstance(msg, dict) else None
 
 
-def read_message(stream) -> dict | None:
+def read_message(stream):
     """从字节流读一条 JSON-RPC 消息。
 
     优先支持 LSP/MCP 官方 stdio 帧格式（`Content-Length: N\\r\\n\\r\\n` + N 字节
     正文）；若首行不是 Content-Length 头，则按 newline-delimited JSON 回退
-    （兼容裸 JSON 一行一个的客户端）。EOF 或非对象帧返回 None。
+    （兼容裸 JSON 一行一个的客户端）。
+
+    返回：
+      - dict  合法 JSON 对象帧
+      - _SKIP 可跳过帧（空行/非对象/坏 JSON），主循环应 continue 而非退出
+      - None  真 EOF（流已耗尽），主循环应 break
     """
     first = stream.readline()
     if not first:
-        return None
+        return None  # 真 EOF
     if first.rstrip(b"\r\n").lower().startswith(b"content-length:"):
         header = first
         while True:
             line = stream.readline()
             if not line:
-                return None
+                return None  # 头部在读到空行前截断 → 视为 EOF
             if line in (b"\r\n", b"\n"):
                 break
             header += line
         m = _CONTENT_LENGTH_RE.search(header.decode("utf-8", errors="replace"))
         if not m:
-            return None
+            return _SKIP  # 有 Content-Length 前缀但缺长度 → 不可解析帧
         n = int(m.group(1))
         body = stream.read(n)
-        return _json_object(body.decode("utf-8", errors="replace"))
-    # newline-delimited fallback
-    return _json_object(first.decode("utf-8", errors="replace"))
+        msg = _json_object(body.decode("utf-8", errors="replace"))
+    else:
+        msg = _json_object(first.decode("utf-8", errors="replace"))
+    return msg if msg is not None else _SKIP
 
 
 def send_message(stream, msg: dict) -> None:
@@ -146,23 +156,26 @@ class MemoryCoreBackend:
         raise ValueError(f"unknown tool: {name}")
 
 
-def main():
+def main(in_stream=None, out_stream=None, backend=None):
     # Windows 管道默认 GBK，强制 UTF-8，保证中文 JSON 帧（双向）不被转码/抛错。
     # 注意：这里只 reconfigure stdout/stderr；stdin 走 read_message(sys.stdin.buffer)
     # 以字节方式解析 Content-Length 帧，reconfigure 文本包装器无意义且可能污染缓冲。
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    if out_stream is None:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
-    backend = MemoryCoreBackend()
+    in_stream = in_stream if in_stream is not None else sys.stdin.buffer
+    out_stream = out_stream if out_stream is not None else sys.stdout.buffer
+    backend = backend or MemoryCoreBackend()
     while True:
-        msg = read_message(sys.stdin.buffer)
+        msg = read_message(in_stream)
         if msg is None:
-            break  # EOF
-        if not isinstance(msg, dict):
-            continue  # 合法 JSON 但非对象帧（[]/42/null），不崩循环
+            break  # 真 EOF
+        if msg is _SKIP:
+            continue  # 空行心跳 / 非对象 / 坏 JSON 帧，跳过不退出
         method = msg.get("method")
         params = msg.get("params") or {}
         msg_id = msg.get("id")
@@ -170,7 +183,7 @@ def main():
             continue  # 通知
         reply = backend.handle(method, params, msg_id)
         if reply is not None:
-            send_message(sys.stdout.buffer, reply)
+            send_message(out_stream, reply)
 
 
 if __name__ == "__main__":

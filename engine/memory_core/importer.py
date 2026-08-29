@@ -64,6 +64,10 @@ def _heading_slug(chunk: str, idx: int) -> str:
     """从 chunk 的首个 `## ` 标题生成稳定 slug（无标题回退到 chunk 索引）。
 
     用于多块文件的 source_file 后缀，保证每块有自己的 hash 幂等键。
+    重复标题（同文件多个 `## 偏好` 节）用块序号 `-{idx}` 消歧——否则两块
+    撞同一个 source_file，重扫时各自 hash 键冲突、每块都重灌（imported != 0）。
+    idx 由 `_chunk_content` 的块序确定，同一文件内容未变则 idx 不变，
+    source_file 跨重扫保持稳定，幂等成立。
     """
     m = re.search(r"^#+\s+(.+)", chunk, flags=re.MULTILINE)
     if m:
@@ -72,7 +76,7 @@ def _heading_slug(chunk: str, idx: int) -> str:
             c for c in slug if c.isalnum() or "一" <= c <= "鿿" or c in "-_"
         )[:40]
         if slug:
-            return slug
+            return f"{slug}-{idx}"
     return f"chunk{idx}"
 
 

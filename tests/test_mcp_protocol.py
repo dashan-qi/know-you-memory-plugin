@@ -1,6 +1,7 @@
 import io, json, unittest
 from pathlib import Path
-from servers.mcp_server import MemoryCoreBackend, rpc_reply, read_message, send_message
+from servers.mcp_server import (MemoryCoreBackend, _SKIP, main as server_main,
+                                rpc_reply, read_message, send_message)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -74,11 +75,31 @@ class TestMCPProtocol(unittest.TestCase):
         self.assertEqual(msg["method"], "ping")
         self.assertEqual(msg["id"], 9)
 
-    def test_read_message_skips_non_dict(self):
-        # 合法 JSON 但非对象帧 → 返回 None，主循环跳过不崩
-        self.assertIsNone(read_message(io.BytesIO(b"[1,2,3]\n")))
-        self.assertIsNone(read_message(io.BytesIO(b"null\n")))
+    def test_read_message_eof_vs_skippable(self):
+        # 真 EOF → None（主循环退出）；空行心跳 / 非对象 / 坏 JSON → _SKIP（主循环跳过）
         self.assertIsNone(read_message(io.BytesIO(b"")))
+        self.assertIs(read_message(io.BytesIO(b"\n")), _SKIP)
+        self.assertIs(read_message(io.BytesIO(b"[1,2,3]\n")), _SKIP)
+        self.assertIs(read_message(io.BytesIO(b"null\n")), _SKIP)
+        self.assertIs(read_message(io.BytesIO(b"not json\n")), _SKIP)
+
+    def test_main_skips_blank_and_non_dict_frames(self):
+        # 裸 \n 心跳 + [1,2,3] 帧后接合法帧 → 服务器必须处理合法帧且不退出
+        req = {"jsonrpc": "2.0", "method": "ping", "id": 99}
+        payload = json.dumps(req, ensure_ascii=False).encode("utf-8")
+        framed = b"Content-Length: %d\r\n\r\n" % len(payload) + payload
+        stream = io.BytesIO(b"\n[1,2,3]\n" + framed)
+        out = io.BytesIO()
+        server_main(in_stream=stream, out_stream=out, backend=self.be)
+        data = out.getvalue()
+        self.assertTrue(data.startswith(b"Content-Length:"))
+        head, sep, body = data.partition(b"\r\n\r\n")
+        self.assertEqual(sep, b"\r\n\r\n")
+        n = int(head.split(b":")[1].strip())
+        parsed = json.loads(body[:n].decode("utf-8"))
+        self.assertEqual(parsed["jsonrpc"], "2.0")
+        self.assertEqual(parsed["id"], 99)
+        self.assertEqual(parsed["result"], {})
 
 if __name__ == "__main__":
     unittest.main()
