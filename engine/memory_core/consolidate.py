@@ -124,9 +124,17 @@ class Consolidator:
         store: MemoryStore,
         extractor: FactExtractor | None = None,
     ):
-        from .llm_extractor import LLMExtractor
         self.store = store
-        self.extractor = extractor or LLMExtractor()
+        if extractor is not None:
+            self.extractor = extractor
+            return
+        # 默认启发式提取器（stdlib-only，不调 LLM）；LLM 提取器为可选增强路径
+        try:
+            from .llm_extractor import LLMExtractor
+            self.extractor = LLMExtractor()
+        except ImportError:
+            logger.info("llm_extractor 不可用，回退 HeuristicExtractor")
+            self.extractor = HeuristicExtractor()
 
     def consolidate(
         self,
@@ -262,9 +270,10 @@ class Consolidator:
         )
         self.store.sqlite.insert(new_entry)
 
-        # 写入向量
-        vectors = self.store.embed([new_content])
-        self.store.lancedb.upsert([new_entry], vectors)
+        # 写入向量（可选增强路径，无向量依赖时跳过）
+        if self.store.lancedb is not None:
+            vectors = self.store.embed([new_content])
+            self.store.lancedb.upsert([new_entry], vectors)
 
         # 3. 创建 supersedes 边（新 → 旧）
         edge = Edge(

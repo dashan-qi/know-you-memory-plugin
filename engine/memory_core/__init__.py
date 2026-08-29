@@ -315,6 +315,8 @@ class MemoryCore:
         Returns:
             {"before": N, "after": N, "removed_estimate": N}
         """
+        if self.store.lancedb is None:
+            return {"before": 0, "after": 0, "removed_estimate": 0}
         before = self.store.lancedb.count()
         self.store.lancedb.compact()
         after = self.store.lancedb.count()
@@ -328,7 +330,7 @@ class MemoryCore:
                 layer: self.store.sqlite.count(layer=layer)
                 for layer in ["L1", "L2", "L3", "L4", "L5", "LCM"]
             },
-            "vectors": self.store.lancedb.count(),
+            "vectors": self.store.lancedb.count() if self.store.lancedb is not None else 0,
         }
 
     def project_stats(self) -> dict:

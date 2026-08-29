@@ -17,9 +17,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Iterator
 
-import lancedb
-import numpy as np
-from lancedb.table import Table as LanceTable
+# 向量层为可选增强路径：lancedb/numpy 不可用时降级为纯 SQLite 核心，
+# 保证 `import memory_core` 在零第三方依赖环境（纯 stdlib）下可用。
+try:
+    import lancedb
+    import numpy as np
+    from lancedb.table import Table as LanceTable
+    _VECTOR_AVAILABLE = True
+except ImportError:
+    _VECTOR_AVAILABLE = False
 
 from .config import (
     MemoryCoreConfig,
@@ -58,7 +64,7 @@ class MemoryEntry:
         "id", "name", "content", "layer", "category", "scope", "project_id",
         "tags", "created_at", "updated_at", "last_accessed_at",
         "access_count", "weight", "source_session_id", "confidence",
-        "status", "metadata", "valid_from", "valid_until",
+        "status", "metadata", "source_file", "valid_from", "valid_until",
     )
 
     def __init__(
@@ -72,6 +78,7 @@ class MemoryEntry:
         source_session_id: Optional[str] = None,
         confidence: float = 1.0,
         metadata: Optional[dict] = None,
+        source_file: Optional[str] = None,
         *,
         id: Optional[str] = None,
         name: str = "",
@@ -101,6 +108,7 @@ class MemoryEntry:
         self.confidence = confidence
         self.status = status
         self.metadata = metadata or {}
+        self.source_file = source_file
         self.valid_from = valid_from
         self.valid_until = valid_until
 
@@ -121,6 +129,7 @@ class MemoryEntry:
             "weight": self.weight,
             "source_session_id": self.source_session_id,
             "confidence": self.confidence,
+            "source_file": self.source_file,
             "status": self.status,
             "metadata": json.dumps(self.metadata, ensure_ascii=False),
             "valid_from": self.valid_from,
@@ -155,6 +164,7 @@ class MemoryEntry:
             confidence=row.get("confidence", 1.0),
             status=row.get("status", "active"),
             metadata=meta,
+            source_file=row.get("source_file") or None,
             valid_from=row.get("valid_from") or None,
             valid_until=row.get("valid_until") or None,
         )
@@ -390,6 +400,20 @@ class SQLiteManager:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
 
+    def __del__(self):
+        """GC 时兜底关闭连接，避免 Windows 下 db 文件被占用无法清理。
+
+        Python 3.14 的 sqlite3 模块会用模块级 LRU 缓存持有连接对象，
+        仅靠引用计数归零不会立即关闭底层文件句柄；这里显式 close，
+        让未显式调用 close() 的调用方也能释放文件锁。
+        """
+        try:
+            conn = getattr(self, "_conn", None)
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
     def _create_tables(self):
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS memories (
@@ -411,7 +435,8 @@ class SQLiteManager:
                 status          TEXT    NOT NULL DEFAULT 'active',
                 metadata        TEXT    NOT NULL DEFAULT '{}',
                 valid_from      TEXT,
-                valid_until     TEXT
+                valid_until     TEXT,
+                source_file     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS edges (
@@ -469,6 +494,17 @@ class SQLiteManager:
         try:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_valid_until ON memories(valid_until)"
+            )
+        except Exception:
+            pass
+        # 兼容旧库：加 source_file 列（ingest 替换 / find_by_source_file 用）
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN source_file TEXT")
+        except Exception:
+            pass  # 列已存在
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_source_file ON memories(source_file)"
             )
         except Exception:
             pass
@@ -602,10 +638,10 @@ class SQLiteManager:
         return MemoryEntry.from_row(dict(row)) if row else None
 
     def find_by_source_file(self, source_file: str) -> list[MemoryEntry]:
-        """按 metadata.source_file 查所有活跃条目（ingest 替换用）"""
+        """按 source_file 列查所有活跃条目（ingest 替换用）"""
         rows = self._conn.execute(
-            "SELECT * FROM memories WHERE status = 'active' "
-            "AND json_extract(metadata, '$.source_file') = ? ORDER BY weight DESC",
+            "SELECT * FROM memories WHERE source_file = ? AND status = 'active' "
+            "ORDER BY weight DESC",
             (source_file,),
         ).fetchall()
         return [MemoryEntry.from_row(dict(r)) for r in rows]
@@ -648,7 +684,7 @@ class SQLiteManager:
                 "m.tags, m.created_at, m.updated_at, m.last_accessed_at, "
                 "m.access_count, m.weight, m.source_session_id, m.confidence, "
                 "m.status, m.metadata, m.name, m.valid_from, m.valid_until, "
-                "bm25(memories_fts) as rank "
+                "m.source_file, bm25(memories_fts) as rank "
                 "FROM memories_fts "
                 "JOIN memories m ON m.id = memories_fts.id "
                 "WHERE " + " AND ".join(where_clauses) + " "
@@ -963,16 +999,24 @@ class MemoryStore:
     def __init__(self, config: Optional[MemoryCoreConfig] = None):
         self.config = config or MemoryCoreConfig()
         self.sqlite = SQLiteManager(self.config.sqlite_path)
-        self.lancedb = LanceDBManager(self.config.lancedb_path)
+        # 向量层为可选增强路径：lancedb/numpy 不可用时置 None，走纯 SQLite 核心
+        self.lancedb = (
+            LanceDBManager(self.config.lancedb_path) if _VECTOR_AVAILABLE else None
+        )
         self._embedder = None  # lazy init
         logger.info(
-            "MemoryStore ready: sqlite=%s, lancedb=%s",
-            self.config.sqlite_path, self.config.lancedb_path,
+            "MemoryStore ready: sqlite=%s, lancedb=%s (vectors=%s)",
+            self.config.sqlite_path,
+            self.config.lancedb_path if self.lancedb is not None else None,
+            _VECTOR_AVAILABLE,
         )
 
     @property
     def embedder(self):
-        """延迟加载嵌入模型"""
+        """延迟加载嵌入模型（向量层不可用时返回 None，不抛异常）"""
+        if not _VECTOR_AVAILABLE:
+            logger.warning("向量层不可用（lancedb/numpy/sentence-transformers 未安装），embedding 功能关闭")
+            return None
         if self._embedder is None:
             from sentence_transformers import SentenceTransformer
             logger.info("Loading embedding model: %s", self.config.embedding_model)
@@ -980,7 +1024,9 @@ class MemoryStore:
         return self._embedder
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """文本 → 向量（文档侧，不加前缀）"""
+        """文本 → 向量（文档侧，不加前缀）。向量层不可用时返回空列表。"""
+        if not _VECTOR_AVAILABLE or self.embedder is None:
+            return []
         embeddings = self.embedder.encode(
             texts,
             batch_size=32,
@@ -995,6 +1041,8 @@ class MemoryStore:
         BGE 模型在 query 侧加前缀能显著提升语义匹配效果。
         参考: https://huggingface.co/BAAI/bge-small-zh-v1.5
         """
+        if not _VECTOR_AVAILABLE or self.embedder is None:
+            return []
         query_hash = hashlib.sha256(
             f"query\0{query}".encode("utf-8", errors="replace")
         ).hexdigest()
@@ -1026,6 +1074,7 @@ class MemoryStore:
         source_session_id: Optional[str] = None,
         confidence: float = 1.0,
         metadata: Optional[dict] = None,
+        source_file: Optional[str] = None,
         *,
         dedup: bool = True,
         valid_from: Optional[str] = None,
@@ -1035,6 +1084,8 @@ class MemoryStore:
 
         Args:
             dedup: True 时检查内容是否重复，重复则返回已有 ID
+            source_file: 来源文件路径（importer 用）。同 source_file 再次灌入时
+                替换而非追加（归档旧活跃条目）。也会同步进 metadata 以兼容导出逻辑。
         """
         # 去重：内容完全相同视为重复
         if dedup:
@@ -1042,6 +1093,12 @@ class MemoryStore:
             if existing:
                 self.sqlite.update(existing.id, updated_at=_now_iso())
                 return existing.id
+
+        # source_file 透传：写入 MemoryEntry.source_file，并同步进 metadata（向后兼容）
+        if source_file is not None:
+            if metadata is None:
+                metadata = {}
+            metadata.setdefault("source_file", source_file)
 
         # 从内容提取 name（优先用 metadata.source_file，其次用 frontmatter name）
         entry_name = ""
@@ -1056,6 +1113,12 @@ class MemoryStore:
             from .classify import infer_project_id
             project_id = infer_project_id(content)
 
+        # 同 source_file 再次灌入 → 替换而非追加（归档旧活跃条目，避免重复累积）
+        if source_file is not None:
+            for old in self.sqlite.find_by_source_file(source_file):
+                self.sqlite.update(old.id, status="archived", updated_at=_now_iso())
+                self._remove_fts(old.id)
+
         entry = MemoryEntry(
             name=entry_name,
             content=content,
@@ -1067,6 +1130,7 @@ class MemoryStore:
             source_session_id=source_session_id,
             confidence=confidence,
             metadata=metadata,
+            source_file=source_file,
             valid_from=valid_from,
             valid_until=valid_until,
         )
@@ -1080,9 +1144,10 @@ class MemoryStore:
             index_memory(self.sqlite._conn, entry.id, content)
         except Exception:
             pass  # 实体索引失败不阻塞写入
-        # LanceDB
-        vectors = self.embed([content])
-        self.lancedb.upsert([entry], vectors)
+        # LanceDB（可选增强路径，无向量依赖时跳过）
+        if self.lancedb is not None:
+            vectors = self.embed([content])
+            self.lancedb.upsert([entry], vectors)
         return entry.id
 
     def add_batch(self, items: list[dict]) -> list[str]:
@@ -1100,6 +1165,7 @@ class MemoryStore:
                 source_session_id=item.get("source_session_id"),
                 confidence=item.get("confidence", 1.0),
                 metadata=item.get("metadata"),
+                source_file=item.get("source_file"),
                 created_at=item.get("created_at"),
                 updated_at=item.get("updated_at"),
                 valid_from=item.get("valid_from"),
@@ -1120,9 +1186,10 @@ class MemoryStore:
         except Exception:
             pass  # 实体索引失败不阻塞写入
 
-        # 批量嵌入 + 写入 LanceDB
-        vectors = self.embed(contents)
-        self.lancedb.upsert(entries, vectors)
+        # 批量嵌入 + 写入 LanceDB（可选增强路径，无向量依赖时跳过）
+        if self.lancedb is not None:
+            vectors = self.embed(contents)
+            self.lancedb.upsert(entries, vectors)
 
         return [e.id for e in entries]
 
@@ -1130,11 +1197,16 @@ class MemoryStore:
         """获取单条记忆"""
         return self.sqlite.get(memory_id)
 
+    def find_by_source_file(self, source_file: str) -> list[MemoryEntry]:
+        """按来源文件查所有活跃条目（ingest 替换用）"""
+        return self.sqlite.find_by_source_file(source_file)
+
     def delete(self, memory_id: str) -> bool:
         """删除记忆"""
         ok = self.sqlite.delete(memory_id)
         if ok:
-            self.lancedb.delete([memory_id])
+            if self.lancedb is not None:
+                self.lancedb.delete([memory_id])
             self._remove_fts(memory_id)
         return ok
 
@@ -1144,19 +1216,21 @@ class MemoryStore:
             new_content = fields.pop("content")
             old = self.sqlite.get(memory_id)
             if old and old.content != new_content:
-                self.lancedb.delete([memory_id])
-                vectors = self.embed([new_content])
-                entry = MemoryEntry(
-                    id=memory_id,
-                    content=new_content,
-                    layer=old.layer,
-                    category=old.category,
-                    scope=old.scope,
-                    project_id=old.project_id,
-                    tags=old.tags,
-                    confidence=old.confidence,
-                )
-                self.lancedb.upsert([entry], vectors)
+                # 内容变化 → 重新嵌入向量（可选增强路径，无向量依赖时跳过）
+                if self.lancedb is not None:
+                    self.lancedb.delete([memory_id])
+                    vectors = self.embed([new_content])
+                    entry = MemoryEntry(
+                        id=memory_id,
+                        content=new_content,
+                        layer=old.layer,
+                        category=old.category,
+                        scope=old.scope,
+                        project_id=old.project_id,
+                        tags=old.tags,
+                        confidence=old.confidence,
+                    )
+                    self.lancedb.upsert([entry], vectors)
         return self.sqlite.update(memory_id, **fields)
 
     def touch(self, memory_id: str):
@@ -1178,7 +1252,12 @@ class MemoryStore:
         layer: Optional[str] = None,
         project_id: Optional[str] = None,
     ) -> list[tuple[MemoryEntry, float]]:
-        """语义搜索，返回 (MemoryEntry, similarity) 列表"""
+        """语义搜索，返回 (MemoryEntry, similarity) 列表。
+
+        向量层不可用（self.lancedb is None）时返回空列表（调用方走关键词检索）。
+        """
+        if self.lancedb is None:
+            return []
         vec = self.embed_query(query)
         results = self.lancedb.search(
             vec, top_k=top_k, layer=layer, project_id=project_id
@@ -1498,8 +1577,8 @@ class MemoryStore:
                         valid_from=fm_valid_from,
                         valid_until=fm_valid_until,
                     )
-                    # 更新向量（如果内容变了）
-                    if entry.content != content_for_db:
+                    # 更新向量（如果内容变了；可选增强路径，无向量依赖时跳过）
+                    if entry.content != content_for_db and self.lancedb is not None:
                         self.lancedb.delete([entry.id])
                         vectors = self.embed([content_for_db])
                         from .store import MemoryEntry as _ME
@@ -1680,6 +1759,8 @@ class MemoryStore:
         Returns:
             {"before": N, "after": N, "removed": N}
         """
+        if self.lancedb is None:
+            return {"before": 0, "after": 0, "removed": 0}
         before = self.lancedb.count()
         active_ids = {e.id for e in self.sqlite.list_all()}
         removed = self.lancedb.compact_orphans(active_ids)
