@@ -68,16 +68,31 @@ class Verdict:
         )
 
 
-def _determine_confidence_tier(entry: MemoryEntry, retrieval_score: float = 0.5) -> str:
+def _determine_confidence_tier(
+    entry: MemoryEntry,
+    retrieval_score: float = 0.5,
+    has_vectors: bool = True,
+) -> str:
     """根据记忆的 confidence、weight 和检索分数确定确认度层级
 
-    检索分数是 RRF 融合后的分数。RRF 典型范围：0.015-0.060。
+    检索分数是 RRF 融合后的分数。RRF 典型范围：0.015-0.060（双路）。
     好的向量匹配会产生更高的 RRF（两路都有贡献）。
+
+    has_vectors 决定用哪套阈值：
+    - True（双路 TF-IDF + 向量，生产默认）：保持 strong>=0.030 / moderate>=0.025，
+      只对两路都有命中的结果给高置信度。
+    - False（单路，零第三方依赖环境纯 TF-IDF）：RRF 只来自一路 rank 项，
+      最大值约 1/(k+1)=1/61≈0.0164。若沿用双路阈值，任何结果都会被判 low →
+      skip，recall 恒为空。这里放宽到单路量级：strong>=0.014（≈rank1-2）、
+      moderate>=0.008（≈rank8 及更优）。
     """
-    # 综合分数 = entry 固有置信度 × entry 权重 × 检索贡献
-    # RRF 0.03+ 算强匹配（至少在一路排前 10）
-    retrieval_strong = retrieval_score >= 0.030
-    retrieval_moderate = retrieval_score >= 0.025
+    if has_vectors:
+        retrieval_strong = retrieval_score >= 0.030
+        retrieval_moderate = retrieval_score >= 0.025
+    else:
+        # 单路 TF-IDF：RRF rank1≈0.0164 即强匹配；0.008≈rank8 及以上为中等
+        retrieval_strong = retrieval_score >= 0.014
+        retrieval_moderate = retrieval_score >= 0.008
 
     if entry.confidence >= CONFIDENCE_HIGH and entry.weight >= 0.5 and retrieval_strong:
         return "high"
@@ -162,14 +177,21 @@ def check_context_compatibility(
 # ── 3. 确认度分层 ────────────────────────────────────
 
 
-def determine_inject_mode(entry: MemoryEntry, retrieval_score: float = 0.5) -> str:
+def determine_inject_mode(
+    entry: MemoryEntry,
+    retrieval_score: float = 0.5,
+    has_vectors: bool = True,
+) -> str:
     """根据确认度决定注入方式
 
     - high: 直接引用，不加限定词
     - medium: 加"可能""之前提到过"等限定词
     - low: 不注入（skip）
+
+    has_vectors: 是否双路（TF-IDF + 向量）。False 时用单路 RRF 阈值，
+        见 _determine_confidence_tier，否则零依赖环境 recall 恒为空。
     """
-    tier = _determine_confidence_tier(entry, retrieval_score)
+    tier = _determine_confidence_tier(entry, retrieval_score, has_vectors=has_vectors)
     if tier == "high":
         return "direct"
     elif tier == "medium":
@@ -389,6 +411,8 @@ class MemoryJudge:
         """
         result = JudgmentResult(query=query)
         all_entries = [e for e, _ in candidates]
+        # 单路（纯 TF-IDF，零第三方依赖）时用放宽的 RRF 阈值，否则 recall 恒为空
+        has_vectors = self.store.lancedb is not None
 
         for entry, score in candidates:
             # 1. 意图匹配
@@ -412,7 +436,7 @@ class MemoryJudge:
                 continue
 
             # 4. 确认度分层 → 注入模式（含检索分数）
-            inject_mode = determine_inject_mode(entry, score)
+            inject_mode = determine_inject_mode(entry, score, has_vectors=has_vectors)
 
             # 时态降权：过期记忆降低注入级别
             if temporal_factor < 1.0:
@@ -435,7 +459,7 @@ class MemoryJudge:
                 score=score,
                 intent_match=intent_ok,
                 context_ok=context_ok,
-                confidence_tier=_determine_confidence_tier(entry, score),
+                confidence_tier=_determine_confidence_tier(entry, score, has_vectors=has_vectors),
                 has_conflict=bool(conflicts),
                 inject_mode=inject_mode,
                 reason=self._build_reason(intent_ok, context_ok, bool(conflicts)),
