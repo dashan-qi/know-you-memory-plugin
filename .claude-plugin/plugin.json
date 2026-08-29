@@ -11,7 +11,7 @@
   "mcpServers": {
     "kym": {
       "type": "stdio",
-      "command": "${PYTHON:-python}",
+      "command": "python",
       "args": ["${CLAUDE_PLUGIN_ROOT}/servers/mcp_server.py"]
     }
   }

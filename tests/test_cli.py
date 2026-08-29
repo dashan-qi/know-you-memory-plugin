@@ -17,6 +17,7 @@ class TestCLI(unittest.TestCase):
     def _run(self, *args, data_dir):
         # 保留父进程环境（Windows 下必须含 USERPROFILE/PATH，否则 Path.home()/DLL 加载失败）
         env = dict(os.environ)
+        env.pop("MEMORY_CORE_VECTORS", None)  # 测试始终走默认（快）路径，不受宿主环境向量开关影响
         env["MEMORY_CORE_DATA"] = str(data_dir)
         env["PYTHONPATH"] = str(REPO / "engine")
         # cli.py 统一 UTF-8 输出（含中文），Windows 下必须显式按 utf-8 解码；

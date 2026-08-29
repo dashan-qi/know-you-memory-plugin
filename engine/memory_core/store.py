@@ -582,12 +582,12 @@ class SQLiteManager:
         return cur.rowcount > 0
 
     def touch(self, memory_id: str) -> bool:
-        """更新访问时间和计数"""
-        return self.update(
-            memory_id,
-            last_accessed_at=_now_iso(),
-            access_count=1,  # SQLite 不支持 +=，用脚本层处理
-        )
+        """更新访问时间。
+
+        access_count 递增交给 MemoryStore.touch 读-改-写（这里若写成
+        access_count=1 会把计数永久钉在 2，见 MemoryStore.touch）。
+        """
+        return self.update(memory_id, last_accessed_at=_now_iso())
 
     def list_all(self, status: str = "active") -> list[MemoryEntry]:
         """列出所有活跃记忆"""
@@ -1174,12 +1174,6 @@ class MemoryStore:
         self.sqlite.insert(entry)
         # FTS5 索引
         self._index_fts(entry)
-        # 实体索引（OpenHuman 跨源聚合轻量版）
-        try:
-            from .entity_index import index_memory
-            index_memory(self.sqlite._conn, entry.id, content)
-        except Exception:
-            pass  # 实体索引失败不阻塞写入
         # LanceDB（可选增强路径，无向量依赖或嵌入器不可用时跳过）
         if self.lancedb is not None:
             vectors = self.embed([content])
@@ -1214,14 +1208,6 @@ class MemoryStore:
         # 批量写入 SQLite
         for entry in entries:
             self.sqlite.insert(entry)
-
-        # 实体索引（OpenHuman 跨源聚合轻量版）
-        try:
-            from .entity_index import index_memory
-            for entry in entries:
-                index_memory(self.sqlite._conn, entry.id, entry.content)
-        except Exception:
-            pass  # 实体索引失败不阻塞写入
 
         # 批量嵌入 + 写入 LanceDB（可选增强路径，无向量依赖或嵌入器不可用时跳过）
         if self.lancedb is not None:
@@ -1273,9 +1259,8 @@ class MemoryStore:
         return self.sqlite.update(memory_id, **fields)
 
     def touch(self, memory_id: str):
-        """记录访问"""
+        """记录访问：更新时间 + access_count 递增（读-改-写）"""
         self.sqlite.touch(memory_id)
-        # 更新 access_count（SQLite 不能 +=）
         entry = self.sqlite.get(memory_id)
         if entry:
             self.sqlite.update(

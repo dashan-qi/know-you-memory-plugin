@@ -126,7 +126,7 @@ know_you_memory_plugin/
   "mcpServers": {
     "kym": {
       "type": "stdio",
-      "command": "${PYTHON:-python}",
+      "command": "python",
       "args": ["${CLAUDE_PLUGIN_ROOT}/servers/mcp_server.py"]
     }
   }

@@ -411,8 +411,13 @@ class MemoryJudge:
         """
         result = JudgmentResult(query=query)
         all_entries = [e for e, _ in candidates]
-        # 单路（纯 TF-IDF，零第三方依赖）时用放宽的 RRF 阈值，否则 recall 恒为空
-        has_vectors = self.store.lancedb is not None
+        # 单路（纯 TF-IDF，零第三方依赖）时用放宽的 RRF 阈值，否则 recall 恒为空。
+        # 部分安装（lancedb 在但 embedder 缺）时 lancedb 非 None 但无向量可召回，
+        # 仍按单路处理，避免用双路阈值误杀全部结果。embedder 属性已缓存，judge
+        # 阶段取值安全。
+        has_vectors = (
+            self.store.lancedb is not None and self.store.embedder is not None
+        )
 
         for entry, score in candidates:
             # 1. 意图匹配
