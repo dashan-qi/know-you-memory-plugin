@@ -67,7 +67,11 @@ class MemoryCoreBackend:
             name = params.get("name", "")
             args = params.get("arguments", {}) or {}
             try:
-                return rpc_reply(msg_id, self._call_tool(name, args))
+                result = self._call_tool(name, args)
+                # MCP 规范：成功响应须包 content block，Claude Code 读 result.content 渲染给模型
+                return rpc_reply(msg_id, {
+                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+                    "isError": False})
             except Exception as e:
                 return rpc_reply(msg_id, error=e)
         return rpc_reply(msg_id, error=f"unknown method: {method}")
@@ -105,6 +109,8 @@ def main():
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(msg, dict):
+            continue  # 合法 JSON 但非对象帧（[]/42/null），不崩循环
         method = msg.get("method")
         params = msg.get("params") or {}
         msg_id = msg.get("id")
