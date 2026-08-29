@@ -4,7 +4,7 @@
       {
         "matcher": "startup",
         "hooks": [
-          { "type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py\"", "async": false }
+          { "type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"", "async": false }
         ]
       }
     ],
