@@ -292,11 +292,16 @@ class MemoryRetriever:
         layer: Optional[str] = None,
         max_candidates: int = MAX_CANDIDATES,
         max_injected: int = MAX_INJECTED,
-    ) -> list[tuple[MemoryEntry, float]]:
+    ) -> list[MemoryEntry]:
         """主检索入口：双路召回 → RRF 融合 → 排序
 
+        向量层是可选增强路径：`self.store.lancedb is None`（纯 stdlib / 无
+        lancedb 依赖）时跳过语义向量召回，纯 TF-IDF（FTS5 → TF-IDF → LIKE）
+        直接进 RRF——单路融合退化为该路的单调重排，即直接返回 TF-IDF 结果。
+        向量缺失时绝不抛异常。
+
         Returns:
-            [(MemoryEntry, final_score), ...] 按分数降序
+            按分数降序的 [MemoryEntry, ...]（仅含 MemoryEntry，不带分数）
         """
         if not self._index_built:
             self.build_index()
@@ -304,20 +309,22 @@ class MemoryRetriever:
         # 1. 关键词召回（FTS5 → TF-IDF → LIKE 三级降级）
         keyword_results: list[tuple[str, float]] = self._keyword_recall(query, layer=layer, project_id=project_id)
 
-        # 2. 语义向量召回
-        vector_results_raw = self.store.search_vector(
-            query,
-            top_k=VECTOR_TOP_K,
-            layer=layer,
-            project_id=project_id,
-        )
-        # 过滤低于阈值的
-        vector_results = [
-            (e.id, sim) for e, sim in vector_results_raw
-            if sim >= VECTOR_SIMILARITY_THRESHOLD
-        ]
+        # 2. 语义向量召回（可选增强路径：无向量层时跳过，绝不让缺失向量抛异常）
+        vector_results: list[tuple[str, float]] = []
+        if self.store.lancedb is not None:
+            vector_results_raw = self.store.search_vector(
+                query,
+                top_k=VECTOR_TOP_K,
+                layer=layer,
+                project_id=project_id,
+            )
+            # 过滤低于阈值的
+            vector_results = [
+                (e.id, sim) for e, sim in vector_results_raw
+                if sim >= VECTOR_SIMILARITY_THRESHOLD
+            ]
 
-        # 3. RRF 融合
+        # 3. RRF 融合（单路时 RRF 退化为关键词结果的单调重排 = 直接返回 TF-IDF）
         fused = reciprocal_rank_fusion(keyword_results, vector_results)
 
         # 4. 解析为 MemoryEntry + score（去重：同一 memory_id 只保留一个）
@@ -354,7 +361,7 @@ class MemoryRetriever:
             return (temporal_rank, -rrf_score)
 
         candidates.sort(key=_sort_key)
-        return candidates[:max_injected]
+        return [entry for entry, _ in candidates[:max_injected]]
 
     def search_by_keyword(
         self, keyword: str, limit: int = 10
