@@ -10,22 +10,30 @@ memory_core 存储层 — SQLite + LanceDB
 from __future__ import annotations
 
 import json
+import os
 import uuid
 import hashlib
 import logging
+import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Iterator
 
 # 向量层为可选增强路径：lancedb/numpy 不可用时降级为纯 SQLite 核心，
 # 保证 `import memory_core` 在零第三方依赖环境（纯 stdlib）下可用。
-try:
-    import lancedb
-    import numpy as np
-    from lancedb.table import Table as LanceTable
-    _VECTOR_AVAILABLE = True
-except ImportError:
-    _VECTOR_AVAILABLE = False
+# V1 纯本地设计：向量默认关闭，显式 opt-in。必须同时满足：
+#   ① lancedb 可导入
+#   ② 环境变量 MEMORY_CORE_VECTORS=1
+# 默认路径（纯 SQLite + TF-IDF）绝不 import sentence_transformers/torch，
+# 也不 import lancedb/pyarrow/pandas，绝不访问 HF Hub——CLI/hook/MCP 秒回。
+def _lancedb_importable() -> bool:
+    """仅探测 lancedb 是否可导入，不实际执行 import（避免拖入 pyarrow/pandas）。"""
+    try:
+        return importlib.util.find_spec("lancedb") is not None
+    except Exception:
+        return False
+
+_VECTOR_AVAILABLE = _lancedb_importable() and os.environ.get("MEMORY_CORE_VECTORS") == "1"
 
 from .config import (
     MemoryCoreConfig,
@@ -841,6 +849,8 @@ class LanceDBManager:
     TABLE_NAME = "memory_vectors"
 
     def __init__(self, db_path: Optional[Path] = None):
+        # 向量显式开启才走到这里：此时才真正 import lancedb（首次加载 pyarrow/pandas）
+        import lancedb
         self.db_path = str(db_path or DEFAULT_LANCEDB_PATH)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(self.db_path)
@@ -996,14 +1006,22 @@ class LanceDBManager:
 class MemoryStore:
     """记忆存储统一入口 — SQLite + LanceDB 联合操作"""
 
+    # 类级单例：embedder 模型全进程只加载一次（向量开启时也避免重复 import torch）
+    _embedder_singleton = None
+
     def __init__(self, config: Optional[MemoryCoreConfig] = None):
         self.config = config or MemoryCoreConfig()
         self.sqlite = SQLiteManager(self.config.sqlite_path)
-        # 向量层为可选增强路径：lancedb/numpy 不可用时置 None，走纯 SQLite 核心
-        self.lancedb = (
-            LanceDBManager(self.config.lancedb_path) if _VECTOR_AVAILABLE else None
-        )
-        self._embedder = None  # lazy init
+        # 向量层为可选增强路径：默认关闭（_VECTOR_AVAILABLE 需 MEMORY_CORE_VECTORS=1），
+        # 未开启时 lancedb 置 None，走纯 SQLite 核心；开启但初始化失败（如 lancedb
+        # 实际不可导入）则降级为纯 SQLite，不抛异常。
+        self.lancedb = None
+        if _VECTOR_AVAILABLE:
+            try:
+                self.lancedb = LanceDBManager(self.config.lancedb_path)
+            except Exception as e:
+                logger.warning("LanceDB 初始化失败，向量层降级为纯 SQLite: %s", e)
+                self.lancedb = None
         logger.info(
             "MemoryStore ready: sqlite=%s, lancedb=%s (vectors=%s)",
             self.config.sqlite_path,
@@ -1015,14 +1033,16 @@ class MemoryStore:
     def embedder(self):
         """延迟加载嵌入模型（不可用时返回 None，不抛异常）
 
-        sentence-transformers（含 torch）是重型依赖，可能在 lancedb/numpy
-        已装的情况下缺失——这里单独 try/except，缺失时降级为 None，
+        sentence-transformers（含 torch）是重型依赖，即使在 lancedb/numpy
+        已装的情况下也可能缺失——这里单独 try/except，缺失时降级为 None，
         保证"向量层不可用 → 返回空/跳过，不抛异常"。
+
+        类级单例缓存：模型加载一次后全进程复用，CLI 多轮 subprocess 各自只
+        触发一次（进程内多次 add/recall 不重复加载）。
         """
         if not _VECTOR_AVAILABLE:
-            logger.warning("向量层不可用（lancedb/numpy 未安装），embedding 功能关闭")
             return None
-        if self._embedder is None:
+        if MemoryStore._embedder_singleton is None:
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError:
@@ -1030,12 +1050,14 @@ class MemoryStore:
                 return None
             try:
                 logger.info("Loading embedding model: %s", self.config.embedding_model)
-                self._embedder = SentenceTransformer(self.config.embedding_model)
+                MemoryStore._embedder_singleton = SentenceTransformer(
+                    self.config.embedding_model
+                )
             except Exception as e:
                 logger.warning("嵌入模型加载失败，embedding 功能关闭: %s", e)
-                self._embedder = None
+                MemoryStore._embedder_singleton = None
                 return None
-        return self._embedder
+        return MemoryStore._embedder_singleton
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """文本 → 向量（文档侧，不加前缀）。向量层不可用时返回空列表。"""
