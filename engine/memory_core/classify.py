@@ -32,7 +32,8 @@ logger = logging.getLogger("memory_core.classify")
 # 每条规则: (keywords, layer, category, scope)
 CLASSIFICATION_RULES: list[tuple[list[str], str, str, str]] = [
     # L1 — 最高原则（宪法级别，几乎不自动分类到 L1）
-    (["道德底线", "安全红线", "不可违背", "宪法", "最高原则", "宁可拒绝"],
+    (["原则", "宪法", "底线", "绝不", "道德底线", "安全红线", "不可违背",
+      "最高原则", "宁可拒绝"],
      "L1", "principle", "global"),
 
     # L2 — 用户画像
@@ -44,9 +45,10 @@ CLASSIFICATION_RULES: list[tuple[list[str], str, str, str]] = [
      "L2", "identity", "global"),
 
     # L3 — 行为偏好
-    (["偏好", "喜欢怎么", "怎么用", "工作风格", "沟通风格", "决策模式",
-      "开发流程", "修复流程", "重启", "收工", "关窗", "暗号", "触发",
-      "项目根目录", "不要自动", "先搜索", "不钻本地"],
+    (["偏好", "习惯", "喜欢", "风格", "不要", "喜欢怎么", "怎么用",
+      "工作风格", "沟通风格", "决策模式", "开发流程", "修复流程",
+      "重启", "收工", "关窗", "暗号", "触发", "项目根目录",
+      "不要自动", "先搜索", "不钻本地"],
      "L3", "preference", "global"),
     (["Skill/MCP", "工具评估", "固定流程", "重复执行"],
      "L3", "preference", "global"),
@@ -133,51 +135,53 @@ def classify_content(content: str) -> dict[str, str]:
     return {"layer": "L4", "category": "knowledge", "scope": "project"}
 
 
-# ── 项目 ID 推断 ─────────────────────────────────────
+# ── 项目 ID 推断（通用化） ─────────────────────────────
 
-PROJECT_KEYWORDS: dict[str, list[str]] = {
-    "skillmatch":       ["skillmatch", "skill match", "skill 搜索", "skm", "skill搜索"],
-    "factor-agent":     ["factor_agent", "factor agent", "因子测评", "因子评测",
-                         "streamlit_app.py", "factor_test_engine"],
-    "factor-lab":       ["factor_lab", "factor lab", "因子实验室", "计算模板",
-                         "calculation_templates"],
-    "factor-mine":      ["factor_mine", "factor mine", "因子挖掘", "遗传算法",
-                         "ga_engine", "run_mining"],
-    "strategy-platform":["策略回测", "strategy_platform", "strategy platform",
-                         "StepRunner", "strategy_config"],
-    "portfolio-tracker":["组合跟踪", "portfolio_tracker", "portfolio tracker"],
-    "agent-shell":      ["灵犀", "agent_shell", "agent shell", "electron",
-                         "xterm", "xterm.js", "pty"],
-    "memory-core":      ["memory_core", "memory core", "记忆系统", "记忆内核",
-                         "记忆基础设施"],
-    "dakou-bridge":     ["微信桥", "dakou_bridge", "dakou bridge", "openclaw"],
-}
+# 类标识符 token 匹配：蛇形 / 短横线 / 驼峰 / 帕斯卡
+_PROJECT_TOKEN_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+"        # snake_case
+    r"|[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+"       # kebab-case
+    r"|[a-z]+[A-Z][a-zA-Z0-9]*"                       # camelCase
+    r"|[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]*)+",         # PascalCase
+)
+
+# 驼峰/帕斯卡边界：小写或数字后紧跟大写 → 插下划线
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _canonical_token(token: str) -> str:
+    """统一为小写蛇形，便于跨命名风格比较与分组"""
+    return _CAMEL_BOUNDARY_RE.sub("_", token).replace("-", "_").lower()
 
 
 def infer_project_id(content: str, current_project: str | None = None) -> str | None:
-    """从内容推断所属项目
+    """从内容推断所属项目（通用化，不依赖个人项目词表）
+
+    策略：
+    1. 提取内容中的类标识符 token（驼峰/蛇形/短横线）。
+    2. 若当前项目名（规范化后）命中某 token，优先返回当前项目。
+    3. 否则返回最长 token 的规范化结果（更可能是具体项目名）。
+    4. 无任何匹配返回 None。
 
     Args:
         content: 记忆内容
         current_project: 当前活跃项目 ID，优先匹配
     """
-    content_lower = content.lower()
+    if not content:
+        return None
 
-    # 先检查当前项目
-    if current_project and current_project in PROJECT_KEYWORDS:
-        for kw in PROJECT_KEYWORDS[current_project]:
-            if kw.lower() in content_lower:
-                return current_project
+    tokens = _PROJECT_TOKEN_RE.findall(content)
+    if not tokens:
+        return None
 
-    # 遍历所有项目
-    best_match = None
-    best_len = 0
-    for proj_id, keywords in PROJECT_KEYWORDS.items():
-        for kw in keywords:
-            if kw.lower() in content_lower and len(kw) > best_len:
-                best_match = proj_id
-                best_len = len(kw)
-    return best_match
+    if current_project:
+        cur = _canonical_token(current_project)
+        if cur in {_canonical_token(t) for t in tokens}:
+            return current_project
+
+    # 最长 token 更可能是项目名（factor_agent 比 agent 更具体）
+    best = max(tokens, key=len)
+    return _canonical_token(best)
 
 
 # ── 自动归档 & 过期 ──────────────────────────────────
