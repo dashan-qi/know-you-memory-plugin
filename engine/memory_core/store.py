@@ -1013,14 +1013,28 @@ class MemoryStore:
 
     @property
     def embedder(self):
-        """延迟加载嵌入模型（向量层不可用时返回 None，不抛异常）"""
+        """延迟加载嵌入模型（不可用时返回 None，不抛异常）
+
+        sentence-transformers（含 torch）是重型依赖，可能在 lancedb/numpy
+        已装的情况下缺失——这里单独 try/except，缺失时降级为 None，
+        保证"向量层不可用 → 返回空/跳过，不抛异常"。
+        """
         if not _VECTOR_AVAILABLE:
-            logger.warning("向量层不可用（lancedb/numpy/sentence-transformers 未安装），embedding 功能关闭")
+            logger.warning("向量层不可用（lancedb/numpy 未安装），embedding 功能关闭")
             return None
         if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
-            logger.info("Loading embedding model: %s", self.config.embedding_model)
-            self._embedder = SentenceTransformer(self.config.embedding_model)
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError:
+                logger.warning("sentence-transformers 未安装，embedding 功能关闭")
+                return None
+            try:
+                logger.info("Loading embedding model: %s", self.config.embedding_model)
+                self._embedder = SentenceTransformer(self.config.embedding_model)
+            except Exception as e:
+                logger.warning("嵌入模型加载失败，embedding 功能关闭: %s", e)
+                self._embedder = None
+                return None
         return self._embedder
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -1144,10 +1158,11 @@ class MemoryStore:
             index_memory(self.sqlite._conn, entry.id, content)
         except Exception:
             pass  # 实体索引失败不阻塞写入
-        # LanceDB（可选增强路径，无向量依赖时跳过）
+        # LanceDB（可选增强路径，无向量依赖或嵌入器不可用时跳过）
         if self.lancedb is not None:
             vectors = self.embed([content])
-            self.lancedb.upsert([entry], vectors)
+            if vectors:
+                self.lancedb.upsert([entry], vectors)
         return entry.id
 
     def add_batch(self, items: list[dict]) -> list[str]:
@@ -1186,10 +1201,11 @@ class MemoryStore:
         except Exception:
             pass  # 实体索引失败不阻塞写入
 
-        # 批量嵌入 + 写入 LanceDB（可选增强路径，无向量依赖时跳过）
+        # 批量嵌入 + 写入 LanceDB（可选增强路径，无向量依赖或嵌入器不可用时跳过）
         if self.lancedb is not None:
             vectors = self.embed(contents)
-            self.lancedb.upsert(entries, vectors)
+            if vectors:
+                self.lancedb.upsert(entries, vectors)
 
         return [e.id for e in entries]
 
@@ -1216,7 +1232,7 @@ class MemoryStore:
             new_content = fields.pop("content")
             old = self.sqlite.get(memory_id)
             if old and old.content != new_content:
-                # 内容变化 → 重新嵌入向量（可选增强路径，无向量依赖时跳过）
+                # 内容变化 → 重新嵌入向量（可选增强路径，无向量依赖或嵌入器不可用时跳过）
                 if self.lancedb is not None:
                     self.lancedb.delete([memory_id])
                     vectors = self.embed([new_content])
@@ -1230,7 +1246,8 @@ class MemoryStore:
                         tags=old.tags,
                         confidence=old.confidence,
                     )
-                    self.lancedb.upsert([entry], vectors)
+                    if vectors:
+                        self.lancedb.upsert([entry], vectors)
         return self.sqlite.update(memory_id, **fields)
 
     def touch(self, memory_id: str):
@@ -1259,6 +1276,8 @@ class MemoryStore:
         if self.lancedb is None:
             return []
         vec = self.embed_query(query)
+        if not vec:
+            return []  # 嵌入器不可用/嵌入失败 → 无向量可检索
         results = self.lancedb.search(
             vec, top_k=top_k, layer=layer, project_id=project_id
         )
@@ -1577,7 +1596,7 @@ class MemoryStore:
                         valid_from=fm_valid_from,
                         valid_until=fm_valid_until,
                     )
-                    # 更新向量（如果内容变了；可选增强路径，无向量依赖时跳过）
+                    # 更新向量（如果内容变了；可选增强路径，无向量依赖或嵌入器不可用时跳过）
                     if entry.content != content_for_db and self.lancedb is not None:
                         self.lancedb.delete([entry.id])
                         vectors = self.embed([content_for_db])
@@ -1587,7 +1606,8 @@ class MemoryStore:
                             layer=entry.layer, category=entry.category,
                             scope=entry.scope,
                         )
-                        self.lancedb.upsert([new_entry], vectors)
+                        if vectors:
+                            self.lancedb.upsert([new_entry], vectors)
                     stats["updated"] += 1
                     self.sqlite.upsert_file_hash(
                         rel_path, file_hash,
