@@ -100,6 +100,14 @@ class MemoryCoreBackend:
 
 
 def main():
+    # Windows 管道默认 GBK，强制 UTF-8，保证中文 JSON 帧（双向）不被转码/抛错
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
     backend = MemoryCoreBackend()
     for line in sys.stdin:
         line = line.strip()

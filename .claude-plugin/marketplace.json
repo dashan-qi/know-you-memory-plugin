@@ -1,6 +1,7 @@
 {
   "name": "opensquilla",
   "owner": { "name": "Open Quant" },
+  "description": "五层金字塔持久记忆 Claude Code 插件",
   "plugins": [
     { "name": "know-you-memory", "source": "./", "description": "五层金字塔持久记忆", "version": "0.1.0" }
   ]
