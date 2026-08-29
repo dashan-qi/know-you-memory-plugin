@@ -16,8 +16,8 @@ Know-You-Memory（KYM）是一个 Claude Code 插件，把五层金字塔记忆�
 ## 安装
 
 ```bash
-claude plugin marketplace add opensquilla/know-you-memory-plugin
-claude plugin install know-you-memory@opensquilla --scope user
+claude plugin marketplace add dashan-qi/know-you-memory-plugin
+claude plugin install know-you-memory@openquant --scope user
 claude plugin list   # 确认 know-you-memory 已出现且 enabled
 ```
 
