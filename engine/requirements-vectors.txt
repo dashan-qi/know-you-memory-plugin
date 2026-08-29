@@ -1,0 +1,4 @@
+lancedb>=0.17
+sentence-transformers>=3.0
+numpy>=1.26
+pyarrow>=14
