@@ -1,6 +1,6 @@
 """KYM MCP server — 纯 stdlib JSON-RPC 2.0 over stdio，零第三方依赖"""
 from __future__ import annotations
-import json, os, sys
+import json, os, re, sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -9,6 +9,54 @@ os.environ.setdefault("MEMORY_CORE_DATA", str(Path.home() / ".memory_core"))
 
 from memory_core import MemoryCore
 from memory_core.importer import import_path
+
+_CONTENT_LENGTH_RE = re.compile(r"Content-Length:\s*(\d+)", re.IGNORECASE)
+
+
+def _json_object(text: str) -> dict | None:
+    """把一行文本解析为 JSON 对象；非对象帧/坏 JSON 返回 None（不崩循环）。"""
+    try:
+        msg = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return msg if isinstance(msg, dict) else None
+
+
+def read_message(stream) -> dict | None:
+    """从字节流读一条 JSON-RPC 消息。
+
+    优先支持 LSP/MCP 官方 stdio 帧格式（`Content-Length: N\\r\\n\\r\\n` + N 字节
+    正文）；若首行不是 Content-Length 头，则按 newline-delimited JSON 回退
+    （兼容裸 JSON 一行一个的客户端）。EOF 或非对象帧返回 None。
+    """
+    first = stream.readline()
+    if not first:
+        return None
+    if first.rstrip(b"\r\n").lower().startswith(b"content-length:"):
+        header = first
+        while True:
+            line = stream.readline()
+            if not line:
+                return None
+            if line in (b"\r\n", b"\n"):
+                break
+            header += line
+        m = _CONTENT_LENGTH_RE.search(header.decode("utf-8", errors="replace"))
+        if not m:
+            return None
+        n = int(m.group(1))
+        body = stream.read(n)
+        return _json_object(body.decode("utf-8", errors="replace"))
+    # newline-delimited fallback
+    return _json_object(first.decode("utf-8", errors="replace"))
+
+
+def send_message(stream, msg: dict) -> None:
+    """把一条 JSON-RPC 响应按 LSP Content-Length 帧格式写到字节流并 flush。"""
+    body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+    stream.write(b"Content-Length: %d\r\n\r\n" % len(body))
+    stream.write(body)
+    stream.flush()
 
 
 def rpc_reply(msg_id, result=None, error=None):
@@ -44,8 +92,7 @@ class MemoryCoreBackend:
             "memory_import": {
                 "description": "手动分拣一个目录/文件的已有记忆",
                 "inputSchema": {"type": "object", "properties": {
-                    "path": {"type": "string"},
-                    "recursive": {"type": "boolean"}}}},
+                    "path": {"type": "string"}}}},
         }
 
     def handle(self, method: str, params: dict, msg_id):
@@ -100,23 +147,20 @@ class MemoryCoreBackend:
 
 
 def main():
-    # Windows 管道默认 GBK，强制 UTF-8，保证中文 JSON 帧（双向）不被转码/抛错
+    # Windows 管道默认 GBK，强制 UTF-8，保证中文 JSON 帧（双向）不被转码/抛错。
+    # 注意：这里只 reconfigure stdout/stderr；stdin 走 read_message(sys.stdin.buffer)
+    # 以字节方式解析 Content-Length 帧，reconfigure 文本包装器无意义且可能污染缓冲。
     try:
-        sys.stdin.reconfigure(encoding="utf-8")
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
     backend = MemoryCoreBackend()
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    while True:
+        msg = read_message(sys.stdin.buffer)
+        if msg is None:
+            break  # EOF
         if not isinstance(msg, dict):
             continue  # 合法 JSON 但非对象帧（[]/42/null），不崩循环
         method = msg.get("method")
@@ -126,8 +170,7 @@ def main():
             continue  # 通知
         reply = backend.handle(method, params, msg_id)
         if reply is not None:
-            sys.stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            send_message(sys.stdout.buffer, reply)
 
 
 if __name__ == "__main__":

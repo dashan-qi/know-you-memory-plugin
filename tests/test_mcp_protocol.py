@@ -1,6 +1,6 @@
-import json, unittest
+import io, json, unittest
 from pathlib import Path
-from servers.mcp_server import MemoryCoreBackend, rpc_reply
+from servers.mcp_server import MemoryCoreBackend, rpc_reply, read_message, send_message
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -40,6 +40,45 @@ class TestMCPProtocol(unittest.TestCase):
         self.assertEqual(obj["jsonrpc"], "2.0")
         self.assertEqual(obj["id"], 1)
         self.assertIn("result", obj)
+
+    def test_mcp_content_length_framing_roundtrip(self):
+        # 模拟规范客户端：Content-Length 帧发 initialize → 响应必须以帧开头、
+        # 正文可解析为 JSON-RPC
+        req = {"jsonrpc": "2.0", "method": "initialize",
+               "params": {"protocolVersion": "2025-06-18"}, "id": 1}
+        payload = json.dumps(req, ensure_ascii=False).encode("utf-8")
+        framed = b"Content-Length: %d\r\n\r\n" % len(payload) + payload
+
+        msg = read_message(io.BytesIO(framed))
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["method"], "initialize")
+        self.assertEqual(msg["id"], 1)
+
+        reply = self.be.handle("initialize", msg.get("params") or {}, msg.get("id"))
+        out = io.BytesIO()
+        send_message(out, reply)
+        data = out.getvalue()
+        self.assertTrue(data.startswith(b"Content-Length:"))
+        head, sep, body = data.partition(b"\r\n\r\n")
+        self.assertEqual(sep, b"\r\n\r\n")
+        n = int(head.split(b":")[1].strip())
+        parsed = json.loads(body[:n].decode("utf-8"))
+        self.assertEqual(parsed["jsonrpc"], "2.0")
+        self.assertEqual(parsed["id"], 1)
+        self.assertEqual(parsed["result"]["serverInfo"]["name"], "know-you-memory")
+
+    def test_read_message_newline_fallback(self):
+        # 兼容 newline-delimited 客户端（无 Content-Length 头）
+        msg = read_message(io.BytesIO(b'{"jsonrpc":"2.0","method":"ping","id":9}\n'))
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["method"], "ping")
+        self.assertEqual(msg["id"], 9)
+
+    def test_read_message_skips_non_dict(self):
+        # 合法 JSON 但非对象帧 → 返回 None，主循环跳过不崩
+        self.assertIsNone(read_message(io.BytesIO(b"[1,2,3]\n")))
+        self.assertIsNone(read_message(io.BytesIO(b"null\n")))
+        self.assertIsNone(read_message(io.BytesIO(b"")))
 
 if __name__ == "__main__":
     unittest.main()
