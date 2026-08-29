@@ -292,7 +292,7 @@ class MemoryRetriever:
         layer: Optional[str] = None,
         max_candidates: int = MAX_CANDIDATES,
         max_injected: int = MAX_INJECTED,
-    ) -> list[MemoryEntry]:
+    ) -> list[tuple[MemoryEntry, float]]:
         """主检索入口：双路召回 → RRF 融合 → 排序
 
         向量层是可选增强路径：`self.store.lancedb is None`（纯 stdlib / 无
@@ -301,7 +301,7 @@ class MemoryRetriever:
         向量缺失时绝不抛异常。
 
         Returns:
-            按分数降序的 [MemoryEntry, ...]（仅含 MemoryEntry，不带分数）
+            [(MemoryEntry, rrf_score), ...] 按分数降序
         """
         if not self._index_built:
             self.build_index()
@@ -361,7 +361,7 @@ class MemoryRetriever:
             return (temporal_rank, -rrf_score)
 
         candidates.sort(key=_sort_key)
-        return [entry for entry, _ in candidates[:max_injected]]
+        return candidates[:max_injected]
 
     def search_by_keyword(
         self, keyword: str, limit: int = 10

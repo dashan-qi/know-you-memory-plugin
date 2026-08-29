@@ -22,7 +22,7 @@ class TestRetrieve(unittest.TestCase):
                        scope="project", project_id="dividend")
         self.retriever.add_to_index(a, "DuckDB ATTACH 模式日期类型不兼容，改直连")
         hits = self.retriever.retrieve("DuckDB 日期问题怎么修", max_injected=5)
-        self.assertTrue(any("DuckDB" in e.content for e in hits))
+        self.assertTrue(any("DuckDB" in e.content for e, _ in hits))
 
     def test_add_to_index_incremental(self):
         mid = self.store.add(content="窗口传参要用空格分隔", layer="L4", category="pitfall",
