@@ -43,10 +43,63 @@ def cmd_import(args):
     ensure_data_dir()
     print(json.dumps(import_path(path, data_dir=default_data_dir()), ensure_ascii=False))
 
+def cmd_inspect(args):
+    """记忆巡检：只读健康报告；--clean 时顺带归档/过期/权重刷新/TF-IDF重建"""
+    do_clean = "--clean" in args
+    mc = MemoryCore(data_dir=default_data_dir())
+    try:
+        sqlite = mc.store.sqlite
+        rep = {}
+        # 1. 状态 / 分层
+        rep["status_counts"] = {st: sqlite.count(status=st) for st in ["active", "archived", "expired"]}
+        rep["by_layer"] = {l: sqlite.count(layer=l) for l in ["L0", "L1", "L2", "L3", "L4", "L5", "LCM"]}
+        entries = sqlite.list_all(status="active")
+        rep["active_total"] = len(entries)
+
+        # 2. 健康项
+        low = [e for e in entries if (e.weight or 0) < 0.2]
+        rep["low_weight_lt_0.2"] = len(low)
+        rep["low_weight_samples"] = [
+            {"id": e.id, "layer": e.layer, "w": round(e.weight or 0, 2),
+             "snip": e.content[:42].replace("\n", " ")} for e in low[:8]]
+        rep["no_project"] = sum(1 for e in entries if not e.project_id)
+        rep["manual_entries_no_source"] = sum(1 for e in entries if not e.source_file)
+
+        # 3. 重复内容（按前 80 字聚类）
+        seen, dups = {}, []
+        for e in entries:
+            k = e.content.strip()[:80]
+            if k in seen:
+                dups.append((seen[k], e.id))
+            else:
+                seen[k] = e.id
+        rep["duplicate_pairs"] = len(dups)
+        rep["duplicate_samples"] = [{"a": a, "b": b} for a, b in dups[:5]]
+
+        # 4. 来源分布（分拣完整性）
+        srcs = {}
+        for e in entries:
+            if e.source_file:
+                top = e.source_file.replace("\\", "/").split("/")[-1].split("::")[0]
+                srcs[top] = srcs.get(top, 0) + 1
+        rep["source_files"] = dict(sorted(srcs.items(), key=lambda x: -x[1]))
+
+        # 5. --clean：执行维护
+        if do_clean:
+            from memory_core.classify import run_maintenance, refresh_weights
+            rep["maintenance"] = run_maintenance(sqlite)
+            rep["weights_refreshed"] = refresh_weights(sqlite)
+            mc.retriever.build_index()
+
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+    finally:
+        mc.close()
+
 def main():
-    cmds = {"add": cmd_add, "recall": cmd_recall, "status": cmd_status, "import": cmd_import}
+    cmds = {"add": cmd_add, "recall": cmd_recall, "status": cmd_status,
+            "import": cmd_import, "inspect": cmd_inspect}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
-        print("usage: python engine/cli.py <add|recall|status|import> [args]"); sys.exit(2)
+        print("usage: python engine/cli.py <add|recall|status|import|inspect> [args]"); sys.exit(2)
     cmds[sys.argv[1]](sys.argv[2:])
 
 if __name__ == "__main__":

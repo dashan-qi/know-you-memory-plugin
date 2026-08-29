@@ -41,5 +41,29 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
             self.assertIn("total", r.stdout)
 
+    def test_cli_inspect(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d) / "memory"
+            self._run("add", "巡检测试条目：端口偏好", data_dir=dd)
+            r = self._run("inspect", data_dir=dd)
+            self.assertEqual(r.returncode, 0)
+            rep = json.loads(r.stdout)
+            self.assertIn("status_counts", rep)
+            self.assertIn("by_layer", rep)
+            self.assertIn("active_total", rep)
+            self.assertEqual(rep["active_total"], 1)
+            # 至少有一条落在某个层（L0-L5/LCM）
+            self.assertGreaterEqual(sum(rep["by_layer"].values()), 1)
+
+    def test_cli_inspect_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            dd = Path(d) / "memory"
+            self._run("add", "巡检 clean 冒烟", data_dir=dd)
+            r = self._run("inspect", "--clean", data_dir=dd)
+            self.assertEqual(r.returncode, 0)
+            rep = json.loads(r.stdout)
+            self.assertIn("maintenance", rep)
+            self.assertIn("weights_refreshed", rep)
+
 if __name__ == "__main__":
     unittest.main()

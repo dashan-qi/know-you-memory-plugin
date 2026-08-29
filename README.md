@@ -58,6 +58,17 @@ claude --plugin-dir /path/to/know_you_memory_plugin
 | `/memory-status` | 查看记忆库总量 / 分层 / 数据位置 |
 | `memory-recorder`（skill） | 引导模型：何时写入、何时检索（偏好/决策/踩坑→写；"上次/之前/你记得"→查） |
 
+### CLI 记忆巡检
+
+`engine/cli.py` 在 `add / recall / status / import` 之外提供记忆巡检：
+
+```bash
+python engine/cli.py inspect            # 只读健康报告：状态分布/分层分布/低权重/无项目/重复/来源分布
+python engine/cli.py inspect --clean    # 报告 + 顺带归档/过期/权重刷新/TF-IDF 重建
+```
+
+适合定期体检记忆库（归档堆积、低权重、重复条目、分拣完整性）。
+
 MCP 工具（模型可原生调用）：
 
 - `mcp__plugin_know-you-memory_kym__memory_add` — 写入一条记忆
