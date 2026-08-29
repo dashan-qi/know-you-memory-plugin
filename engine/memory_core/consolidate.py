@@ -128,13 +128,8 @@ class Consolidator:
         if extractor is not None:
             self.extractor = extractor
             return
-        # 默认启发式提取器（stdlib-only，不调 LLM）；LLM 提取器为可选增强路径
-        try:
-            from .llm_extractor import LLMExtractor
-            self.extractor = LLMExtractor()
-        except ImportError:
-            logger.info("llm_extractor 不可用，回退 HeuristicExtractor")
-            self.extractor = HeuristicExtractor()
+        # 默认启发式提取器（stdlib-only，不调 LLM）；KYM V1 已剔除 LLMExtractor
+        self.extractor = HeuristicExtractor()
 
     def consolidate(
         self,

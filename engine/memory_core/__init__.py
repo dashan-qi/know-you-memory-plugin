@@ -38,8 +38,14 @@ class MemoryCore:
     对外暴露最简单的 API。
     """
 
-    def __init__(self, config: MemoryCoreConfig | None = None):
-        self.config = config or MemoryCoreConfig()
+    def __init__(self, data_dir: Path | None = None):
+        """统一入口
+
+        Args:
+            data_dir: 记忆库根目录（SQLite + 向量目录都建在此下）。
+                None 时用默认目录（$MEMORY_CORE_DATA 或 ~/.memory_core）。
+        """
+        self.config = MemoryCoreConfig(data_dir=data_dir) if data_dir is not None else MemoryCoreConfig()
         self.store = MemoryStore(self.config)
         self.retriever = MemoryRetriever(self.store)
         self.judge = MemoryJudge(self.store)
@@ -57,6 +63,8 @@ class MemoryCore:
         project: str | None = None,
         tags: list[str] | None = None,
         session_id: str | None = None,
+        source_file: str | None = None,
+        dedup: bool = True,
         confidence: float = 1.0,
         auto_classify: bool = True,
         valid_from: str | None = None,
@@ -72,6 +80,9 @@ class MemoryCore:
             project: 项目 ID，None 时自动推断
             tags: 标签
             session_id: 来源会话
+            source_file: 来源文件路径（importer 用）。同 source_file 再次灌入时
+                替换而非追加（归档旧活跃条目）。
+            dedup: True 时检查内容是否重复，重复则返回已有 ID
             confidence: 初始确认度 0-1
             auto_classify: 是否自动分类
             valid_from: 事实生效时间 (ISO 8601)，None=一直有效
@@ -97,6 +108,8 @@ class MemoryCore:
             project_id=project,
             tags=tags,
             source_session_id=session_id,
+            source_file=source_file,
+            dedup=dedup,
             confidence=confidence,
             valid_from=valid_from,
             valid_until=valid_until,
