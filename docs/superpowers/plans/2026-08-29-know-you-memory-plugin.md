@@ -494,6 +494,7 @@ from __future__ import annotations
 from pathlib import Path
 from memory_core import MemoryCore
 from memory_core.classify import classify_content
+from memory_core.store import _sha256_file
 
 # 来源 → 层级/分类 默认（可被 classify 覆盖）
 _TOP_LEVEL = {
@@ -592,6 +593,11 @@ def _do_import(mc: MemoryCore, sources: list[tuple[Path, str, str]]) -> dict:
         if not content:
             stats["skipped"] += 1
             continue
+        # 幂等：同文件 hash 未变 → 跳过（source_file 替换 + hash 判断 → 重扫不新增）
+        content_hash = _sha256_file(content)
+        if mc.store.sqlite.file_hash_unchanged(str(path), content_hash):
+            stats["skipped"] += 1
+            continue
         classified = classify_content(content)
         layer = classified.get("layer") or layer_hint
         category = classified.get("category") or cat_hint
@@ -599,6 +605,8 @@ def _do_import(mc: MemoryCore, sources: list[tuple[Path, str, str]]) -> dict:
             mid = mc.add(content, layer=layer, category=category,
                          scope="project", project=None,
                          source_file=str(path), dedup=True)
+            if mid:
+                mc.store.sqlite.upsert_file_hash(str(path), content_hash, None)
         except Exception:
             stats["skipped"] += 1
             continue
@@ -608,7 +616,8 @@ def _do_import(mc: MemoryCore, sources: list[tuple[Path, str, str]]) -> dict:
     return stats
 ```
 
-> 关键点：`source_file=str(path)` 走 Task 2 的替换语义 → 同文件再扫是更新不是堆叠（幂等）。
+> 关键点 1：`source_file=str(path)` 走 Task 2 的替换语义 → 同文件再扫是更新不是堆叠。
+> 关键点 2：**幂等靠 file-hash**（复用 store 的 `file_hash_unchanged`/`upsert_file_hash`）——文件内容没变则跳过，变了大改则替换并刷新 hash。这是 pre-flight ruling：`if mid: imported+=1` 在替换语义下会把"更新"误计为"新增"，幂等测试必挂。
 
 - [ ] **Step 4: 运行测试确认通过**
 
