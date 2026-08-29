@@ -1,0 +1,18 @@
+{
+  "name": "know-you-memory",
+  "displayName": "Know-You-Memory · 知你记忆",
+  "version": "0.1.0",
+  "description": "五层金字塔持久记忆：自动分拣已有记忆、跨会话回忆，纯本地零依赖零LLM",
+  "author": { "name": "Open Quant" },
+  "homepage": "https://github.com/opensquilla/know-you-memory-plugin",
+  "repository": "https://github.com/opensquilla/know-you-memory-plugin",
+  "license": "MIT",
+  "keywords": ["memory", "rag", "knowledge", "persistence", "claude-code"],
+  "mcpServers": {
+    "kym": {
+      "type": "stdio",
+      "command": "${PYTHON:-python}",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/mcp_server.py"]
+    }
+  }
+}

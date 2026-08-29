@@ -1,0 +1,7 @@
+{
+  "name": "opensquilla",
+  "owner": { "name": "Open Quant" },
+  "plugins": [
+    { "name": "know-you-memory", "source": "./", "description": "五层金字塔持久记忆", "version": "0.1.0" }
+  ]
+}
