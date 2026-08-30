@@ -1,93 +1,95 @@
-# 🧠 Know-You-Memory · 知你记忆 (KYM)
+# 🧠 Know-You-Memory (KYM)
 
-> **让每个 AI 助手记得你是谁。** 五层金字塔持久记忆 Claude Code 插件 —— 零依赖 · 零 LLM · 纯本地。
+> **English | [中文](README.zh-CN.md)**
 
-一个开箱即用的 **Claude Code 插件**：装上后，AI 自动记住你的偏好、原则、工作知识，**跨会话持续回忆**，数据 100% 留在你自己的电脑上。
+> **Give every AI assistant a memory of who you are.** A five-layer pyramid persistent-memory plugin for Claude Code — zero-dependency · zero-LLM · 100% local.
 
-**没有 API key · 没有云端 · 没有第三方依赖 · 装完即用。**
+A drop-in **Claude Code plugin**: once installed, your AI remembers your preferences, principles, and working knowledge — **recalling them across sessions** — while your data stays entirely on your own machine.
+
+**No API keys · No cloud · No third-party dependencies · Works out of the box.**
 
 ---
 
-## ✨ 为什么装它
+## ✨ Why install it
 
-| 没有 KYM | 有了 KYM |
+| Without KYM | With KYM |
 |---|---|
-| 每次开新对话，AI 不记得你是谁 | 开窗自动注入「最近记忆 + 待办 flags」 |
-| 偏好、踩过的坑反复交代 | 五层金字塔自动分层，一次记住 |
-| 记忆散落各处、无法检索 | `/memory-recall` 秒级检索，标置信度 |
-| 云端记忆，隐私担忧 | 纯本地 SQLite，零联网 |
+| AI forgets who you are every new session | Auto-injects recent memories + todo flags on every window |
+| You re-explain preferences & hard-won lessons endlessly | Five-layer pyramid auto-classifies — remembered once |
+| Memories scattered & unsearchable | `/memory-recall` instant retrieval with confidence tiers |
+| Cloud memory, privacy worries | 100% local SQLite, zero network |
 
-## 🧠 五层金字塔
+## 🧠 The five-layer pyramid
 
-| 层 | 存什么 |
+| Layer | What it stores |
 |---|---|
-| L0 | 凭据（密钥，默认不入库） |
-| L1 | 最高原则 · 底线 |
-| L2 | 用户画像 · 身份 |
-| L3 | 行为偏好 |
-| L4 | 工作知识 · 项目 · 踩坑 · 研究 |
-| L5 | 关系记忆 |
-| LCM | Agent 能力自画像 |
+| L0 | Credentials (secrets — excluded by default) |
+| L1 | Core principles · boundaries |
+| L2 | User profile · identity |
+| L3 | Behavioral preferences |
+| L4 | Working knowledge · projects · pitfalls · research |
+| L5 | Relationship memory |
+| LCM | Agent capability self-portrait |
 
-## 🚀 快速开始（3 步，30 秒）
+## 🚀 Quick start (3 steps, 30 seconds)
 
 ```bash
-# 1. 添加 marketplace
+# 1. Add the marketplace
 claude plugin marketplace add dashan-qi/know-you-memory-plugin
 
-# 2. 安装插件
+# 2. Install the plugin
 claude plugin install know-you-memory@openquant --scope user
 
-# 3. 重启会话，开聊
+# 3. Restart your session and go
 ```
 
-**首次开窗自动分拣**：扫描你的 `CLAUDE.md` / `README` / `.claude/`，把已有记忆分拣进五层金字塔（幂等：变了才更新，绝不堆叠）。之后每次开窗自动注入：
+**First window auto-import**: scans your `CLAUDE.md` / `README` / `.claude/` and files existing memory into the pyramid (idempotent — only updates when content changes, never duplicates). Every window after that auto-injects:
 
 ```
 [kym] Memory OK | 171 memories | data: ...
-## 🧠 KYM 最近记忆 (top-5)
-## ⚠️ KYM 待办 flags
+## 🧠 KYM Recent Memories (top-5)
+## ⚠️ KYM Todo Flags
 ```
 
-## 🎯 怎么用
+## 🎯 Usage
 
-| 方式 | 作用 |
+| Method | What it does |
 |---|---|
-| `/memory-recall <查询>` | 检索相关记忆，标注置信度与层级 |
-| `/memory-import [路径]` | 手动分拣目录/文件的已有记忆 |
-| `/memory-status` | 查看记忆库总量 / 分层 / 数据位置 |
-| **MCP 工具** | 模型原生调用 `memory_add` / `memory_recall` / `memory_status` / `memory_import` |
-| `python engine/cli.py inspect` | 记忆健康巡检（分层/重复/低权重/来源完整度） |
+| `/memory-recall <query>` | Retrieve related memories with confidence & layer |
+| `/memory-import [path]` | Manually import existing docs |
+| `/memory-status` | View memory stats / layers / data location |
+| **MCP tools** | Model-native `memory_add` / `memory_recall` / `memory_status` / `memory_import` |
+| `python engine/cli.py inspect` | Memory health inspection (layers / duplicates / low-weight / source completeness) |
 
-## 🔒 数据与隐私
+## 🔒 Data & privacy
 
-- 数据全本地：`~/.memory_core/memory.db`（SQLite），可选向量目录 `~/.memory_core/vectors/`
-- **零联网、零 API key、零第三方 Python 依赖**（纯标准库实现）
-- 隐私红线：凭据 / 密码 / Token **永不入库**；分拣 `settings.json` 只摘要名称，跳过 env 里的 key
-- 多 agent 共享记忆：设环境变量 `MEMORY_CORE_DATA` 指向同一目录即可
+- Data stays local: `~/.memory_core/memory.db` (SQLite), optional vectors in `~/.memory_core/vectors/`
+- **Zero network, zero API keys, zero third-party Python dependencies** (pure standard library)
+- Privacy red line: credentials / passwords / tokens are **never stored**; `settings.json` import only summarizes names, skipping env keys
+- Multiple agents sharing memory: point `MEMORY_CORE_DATA` to the same directory
 
-## 🧩 可选增强：语义向量检索
+## 🧩 Optional: semantic vector retrieval
 
-默认纯 Python TF-IDF 检索，秒级返回、零依赖。想要更强的语义召回（BGE 中文嵌入 + LanceDB）：
+Default pure-Python TF-IDF retrieval — instant, zero-dependency. For stronger semantic recall (BGE Chinese embeddings + LanceDB):
 
 ```bash
 pip install -r engine/requirements-vectors.txt
 export MEMORY_CORE_VECTORS=1
 ```
 
-## 📦 卸载
+## 📦 Uninstall
 
 ```bash
 claude plugin uninstall know-you-memory --scope user
 ```
 
-如需连数据一起删除：`rm -rf ~/.memory_core`（谨慎，不可恢复）。
+To remove data too: `rm -rf ~/.memory_core` (careful — irreversible).
 
-## 🧰 为开发者
+## 🧰 For developers
 
-- **引擎与插件分离**：`engine/` + MCP server 都是纯 stdlib，**非 Claude Code 环境（Codex / dsh / 任意 Python）也能直接消费**，见 `docs/integration-codex-dsh.md`
-- 零依赖内核：SQLite + 纯 Python TF-IDF + 规则分类 + 启发式固化
-- 测试：`PYTHONPATH="engine;." python -m unittest discover -s tests -v`（33/33 ✅）
+- **Engine decoupled from the plugin**: `engine/` + MCP server are pure stdlib — consumable by **non-Claude-Code environments (Codex / dsh / any Python)**, see `docs/integration-codex-dsh.md`
+- Zero-dependency core: SQLite + pure-Python TF-IDF + rule-based classification + heuristic consolidation
+- Tests: `PYTHONPATH="engine;." python -m unittest discover -s tests -v` (33/33 ✅)
 
 ## 📄 License
 
@@ -95,4 +97,4 @@ MIT © Open Quant
 
 ---
 
-**喜欢？点个 ⭐ 让更多 AI 拥有好记性。欢迎 [Issues](https://github.com/dashan-qi/know-you-memory-plugin/issues) 反馈与 PR。**
+**Like it? Give it a ⭐ to help more AIs keep good memories. Feedback & PRs welcome via [Issues](https://github.com/dashan-qi/know-you-memory-plugin/issues).**
