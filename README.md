@@ -1,129 +1,98 @@
-# Know-You-Memory · 知你记忆 (KYM)
+# 🧠 Know-You-Memory · 知你记忆 (KYM)
 
-> 五层金字塔持久记忆：自动分拣已有记忆、跨会话回忆，纯本地零依赖零 LLM。
+> **让每个 AI 助手记得你是谁。** 五层金字塔持久记忆 Claude Code 插件 —— 零依赖 · 零 LLM · 纯本地。
 
-Know-You-Memory（KYM）是一个 Claude Code 插件，把五层金字塔记忆体系打包成开箱即用的形态：
+一个开箱即用的 **Claude Code 插件**：装上后，AI 自动记住你的偏好、原则、工作知识，**跨会话持续回忆**，数据 100% 留在你自己的电脑上。
 
-- **自动分拣**：安装后首次开窗，自动把当前项目的已有记忆（`CLAUDE.md` / `.claude/` / `README`）分拣进记忆库
-- **跨会话回忆**：每次开窗自动注入最近活跃记忆与待办 flags；`/memory-recall` 或 MCP 工具随时检索
-- **纯本地**：无 API key、无联网、无第三方 Python 依赖，装完即用
+**没有 API key · 没有云端 · 没有第三方依赖 · 装完即用。**
 
-## 前置要求
+---
 
-- Claude Code
-- **Python 3.11+**，且 `python` 在 PATH 中（MCP server、hooks、CLI 都直接调用 `python`）
+## ✨ 为什么装它
 
-## 安装
+| 没有 KYM | 有了 KYM |
+|---|---|
+| 每次开新对话，AI 不记得你是谁 | 开窗自动注入「最近记忆 + 待办 flags」 |
+| 偏好、踩过的坑反复交代 | 五层金字塔自动分层，一次记住 |
+| 记忆散落各处、无法检索 | `/memory-recall` 秒级检索，标置信度 |
+| 云端记忆，隐私担忧 | 纯本地 SQLite，零联网 |
+
+## 🧠 五层金字塔
+
+| 层 | 存什么 |
+|---|---|
+| L0 | 凭据（密钥，默认不入库） |
+| L1 | 最高原则 · 底线 |
+| L2 | 用户画像 · 身份 |
+| L3 | 行为偏好 |
+| L4 | 工作知识 · 项目 · 踩坑 · 研究 |
+| L5 | 关系记忆 |
+| LCM | Agent 能力自画像 |
+
+## 🚀 快速开始（3 步，30 秒）
 
 ```bash
+# 1. 添加 marketplace
 claude plugin marketplace add dashan-qi/know-you-memory-plugin
+
+# 2. 安装插件
 claude plugin install know-you-memory@openquant --scope user
-claude plugin list   # 确认 know-you-memory 已出现且 enabled
+
+# 3. 重启会话，开聊
 ```
 
-本地开发时也可用 `--plugin-dir` 直接加载：
-
-```bash
-claude --plugin-dir /path/to/know_you_memory_plugin
-```
-
-## 首次自动分拣
-
-在任意项目目录首次开窗，KYM 的 SessionStart hook 检测到**空记忆库**时，会自动扫描当前 workspace 顶层与 `.claude/`：
-
-| 来源 | 目标层级 |
-|------|---------|
-| `CLAUDE.md` / `AGENTS.md` | L3 偏好（原则段会由分类器抬到 L1） |
-| `README.md` | L4 项目知识 |
-| `.claude/skills/**/SKILL.md` | L3 技能知识 |
-| `.claude/commands/*.md` | L3 命令知识 |
-| `.claude/settings.json` | L4 环境（只摘要 hooks/mcp 的**名称**） |
-
-分拣是**幂等**的：文件内容没变则跳过，变了则按 `source_file` 更新而非堆叠重复。
-
-之后每次开窗，SessionStart 会自动注入：
+**首次开窗自动分拣**：扫描你的 `CLAUDE.md` / `README` / `.claude/`，把已有记忆分拣进五层金字塔（幂等：变了才更新，绝不堆叠）。之后每次开窗自动注入：
 
 ```
-[kym] Memory OK | N memories | data: ...
+[kym] Memory OK | 171 memories | data: ...
 ## 🧠 KYM 最近记忆 (top-5)
 ## ⚠️ KYM 待办 flags
 ```
 
-## 命令与 skill
+## 🎯 怎么用
 
-| 命令 / skill | 作用 |
+| 方式 | 作用 |
 |---|---|
-| `/memory-recall <query>` | 检索相关记忆，标注置信度与层级 |
-| `/memory-import [path]` | 手动分拣一个目录/文件的已有记忆（无参数扫当前 workspace） |
+| `/memory-recall <查询>` | 检索相关记忆，标注置信度与层级 |
+| `/memory-import [路径]` | 手动分拣目录/文件的已有记忆 |
 | `/memory-status` | 查看记忆库总量 / 分层 / 数据位置 |
-| `memory-recorder`（skill） | 引导模型：何时写入、何时检索（偏好/决策/踩坑→写；"上次/之前/你记得"→查） |
+| **MCP 工具** | 模型原生调用 `memory_add` / `memory_recall` / `memory_status` / `memory_import` |
+| `python engine/cli.py inspect` | 记忆健康巡检（分层/重复/低权重/来源完整度） |
 
-### CLI 记忆巡检
+## 🔒 数据与隐私
 
-`engine/cli.py` 在 `add / recall / status / import` 之外提供记忆巡检：
+- 数据全本地：`~/.memory_core/memory.db`（SQLite），可选向量目录 `~/.memory_core/vectors/`
+- **零联网、零 API key、零第三方 Python 依赖**（纯标准库实现）
+- 隐私红线：凭据 / 密码 / Token **永不入库**；分拣 `settings.json` 只摘要名称，跳过 env 里的 key
+- 多 agent 共享记忆：设环境变量 `MEMORY_CORE_DATA` 指向同一目录即可
+
+## 🧩 可选增强：语义向量检索
+
+默认纯 Python TF-IDF 检索，秒级返回、零依赖。想要更强的语义召回（BGE 中文嵌入 + LanceDB）：
 
 ```bash
-python engine/cli.py inspect            # 只读健康报告：状态分布/分层分布/低权重/无项目/重复/来源分布
-python engine/cli.py inspect --clean    # 报告 + 顺带归档/过期/权重刷新/TF-IDF 重建
+pip install -r engine/requirements-vectors.txt
+export MEMORY_CORE_VECTORS=1
 ```
 
-适合定期体检记忆库（归档堆积、低权重、重复条目、分拣完整性）。
-
-MCP 工具（模型可原生调用）：
-
-- `mcp__plugin_know-you-memory_kym__memory_add` — 写入一条记忆
-- `mcp__plugin_know-you-memory_kym__memory_recall` — 检索相关记忆
-- `mcp__plugin_know-you-memory_kym__memory_status` — 记忆库统计
-- `mcp__plugin_know-you-memory_kym__memory_import` — 手动分拣
-
-## 可选：语义向量增强
-
-默认使用**纯 Python TF-IDF** 检索（FTS5 + TF-IDF，零依赖，秒回）。若要启用语义向量检索（BGE 中文嵌入 + LanceDB），需要满足两个条件：
-
-1. 安装可选依赖（重型，含 torch）：
-
-   ```bash
-   pip install -r engine/requirements-vectors.txt
-   ```
-
-2. 开启环境变量（默认关闭，避免拖入 pyarrow/pandas 拖慢启动）：
-
-   ```bash
-   # Windows PowerShell
-   $env:MEMORY_CORE_VECTORS = "1"
-   # bash / zsh / macOS
-   export MEMORY_CORE_VECTORS=1
-   ```
-
-开启后写入会自动生成向量，检索走「向量 + TF-IDF」融合排序，语义召回更准。不启用也完全可用。
-
-## 数据目录与隐私
-
-- **数据全本地**：默认 `~/.memory_core/memory.db`（SQLite），向量在 `~/.memory_core/vectors/`
-- 用环境变量 `MEMORY_CORE_DATA` 可自定义数据目录（多 agent 共享记忆时设为同一目录即可）
-- **零联网、零 API key**：引擎不向任何服务器发送数据
-- **隐私红线**：分拣 `settings.json` 时**只摘要 hooks/mcp 的名称**，跳过 env/command 里的 key/token/密码；写入约定也遵循"不记敏感凭据"
-
-## 卸载
+## 📦 卸载
 
 ```bash
 claude plugin uninstall know-you-memory --scope user
 ```
 
-如需连数据一起删除：
+如需连数据一起删除：`rm -rf ~/.memory_core`（谨慎，不可恢复）。
 
-```bash
-# 谨慎：删除后不可恢复
-rm -rf ~/.memory_core
-```
+## 🧰 为开发者
 
-## 开发与测试
+- **引擎与插件分离**：`engine/` + MCP server 都是纯 stdlib，**非 Claude Code 环境（Codex / dsh / 任意 Python）也能直接消费**，见 `docs/integration-codex-dsh.md`
+- 零依赖内核：SQLite + 纯 Python TF-IDF + 规则分类 + 启发式固化
+- 测试：`PYTHONPATH="engine;." python -m unittest discover -s tests -v`（33/33 ✅）
 
-```bash
-cd know_you_memory_plugin
-PYTHONPATH="engine;." python -m unittest discover -s tests -v   # 26 项，全绿
-```
-
-## 许可证
+## 📄 License
 
 MIT © Open Quant
+
+---
+
+**喜欢？点个 ⭐ 让更多 AI 拥有好记性。欢迎 [Issues](https://github.com/dashan-qi/know-you-memory-plugin/issues) 反馈与 PR。**
